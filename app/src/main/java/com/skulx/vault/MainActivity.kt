@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
@@ -15,6 +16,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import java.net.URL
+import java.util.concurrent.CopyOnWriteArrayList
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -25,6 +27,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fullscreenFab: FloatingActionButton
     private val detectedVideos = mutableMapOf<String, String>()
     private var isFullscreen = false
+    private val adDomains = listOf(
+        "googleads","googlesyndication","doubleclick","adsystem","amazon-adsystem",
+        "facebook.com/tr","googletagmanager","google-analytics","scorecardresearch",
+        "outbrain","taboola","adsrvr","bounceexchange","quantserve","moatads",
+        "adsafeprotected","btloader","adnxs","rubiconproject","openx.net",
+        "pubmatic","casalemedia","advertising","analytics","tracking",
+        "telemetry","metrics","log.", "logger.", "pixel.","beacon.",
+        "cdn.ads","pagead","adserver","adservice","adform","adroll",
+        "criteo","mediavine","adsymptotic","adspeed","adzerk","buysellads",
+        "revcontent","popads","onclickads","adsterra","propellerads",
+        "exoclick","juicyads","eroadvertising","trafficfactory","yllix",
+        "ad.plus","ad.plus","ezoic","infolinks","bidvertiser","adblade",
+        "sponsored","affiliate","promo.","campaign.","ads.", "ad.",
+        "banner","popunder","interstitial","prebid","header-bidding"
+    )
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,7 +60,8 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.0 Chrome/120.0.0.0 Mobile Safari/537.0"
+            userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
+            cacheMode = WebSettings.LOAD_DEFAULT
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -51,14 +69,12 @@ class MainActivity : AppCompatActivity() {
                 progressBar.progress = newProgress
                 progressBar.visibility = if (newProgress == 100) View.GONE else View.VISIBLE
             }
-
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                 window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
                 isFullscreen = true
                 fullscreenFab.hide()
             }
-
             override fun onHideCustomView() {
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
@@ -71,14 +87,29 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 urlBar.setText(url)
             }
-
             override fun onPageFinished(view: WebView?, url: String?) {
                 view?.evaluateJavascript(VideoDetector.getInjectionScript(), null)
+                view?.evaluateJavascript(VideoDetector.getNetworkHookScript(), null)
+                view?.evaluateJavascript(VideoDetector.getMediaHookScript(), null)
             }
-
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 request?.url?.toString()?.let { webView.loadUrl(it) }
                 return true
+            }
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val url = request?.url?.toString() ?: return super.shouldInterceptRequest(view, request)
+                if (adDomains.any { url.contains(it, ignoreCase = true) }) {
+                    return WebResourceResponse("text/plain", "UTF-8", null)
+                }
+                if (url.contains(".m3u8") || url.contains(".mp4") || url.contains(".webm") || url.contains(".mkv") || url.contains(".ts")) {
+                    val title = webView.title ?: "Video"
+                    runOnUiThread {
+                        if (!detectedVideos.containsKey(url)) {
+                            detectedVideos[url] = title
+                        }
+                    }
+                }
+                return super.shouldInterceptRequest(view, request)
             }
         }
 
@@ -86,7 +117,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (!detectedVideos.containsKey(url)) {
                     detectedVideos[url] = title
-                    Toast.makeText(this, "Video detected: $title", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Detected: $title", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -112,16 +143,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleFullscreen() {
         if (isFullscreen) {
-            webView.evaluateJavascript(
-                "document.exitFullscreen && document.exitFullscreen();",
-                null
-            )
+            webView.evaluateJavascript("document.exitFullscreen && document.exitFullscreen();", null)
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         } else {
-            webView.evaluateJavascript(
-                "document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();",
-                null
-            )
+            webView.evaluateJavascript("document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();", null)
             window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         }
         isFullscreen = !isFullscreen
@@ -163,7 +188,9 @@ class MainActivity : AppCompatActivity() {
 
         refreshBtn.setOnClickListener {
             webView.evaluateJavascript(VideoDetector.getInjectionScript(), null)
-            Toast.makeText(this, "Scanning for videos...", Toast.LENGTH_SHORT).show()
+            webView.evaluateJavascript(VideoDetector.getNetworkHookScript(), null)
+            webView.evaluateJavascript(VideoDetector.getMediaHookScript(), null)
+            Toast.makeText(this, "Scanning...", Toast.LENGTH_SHORT).show()
         }
 
         backBtn.setOnClickListener { if (webView.canGoBack()) webView.goBack() }
