@@ -1,0 +1,15 @@
+<resources>
+    <style name="Theme.SkulxVault" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/accent_white</item>
+        <item name="colorPrimaryDark">@color/bg_dark</item>
+        <item name="colorAccent">@color/accent_white</item>
+        <item name="android:windowBackground">@color/bg_dark</item>
+        <item name="android:statusBarColor">@color/bg_dark</item>
+        <item name="android:navigationBarColor">@color/bg_dark</item>
+    </style>
+
+    <style name="Theme.SkulxVault.NoActionBar" parent="Theme.SkulxVault">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+    </style>
+</resources>
