@@ -3,100 +3,107 @@ package com.skulx.vault
 import android.webkit.JavascriptInterface
 
 class VideoDetector(private val onVideoFound: (String, String) -> Unit) {
-    @JavascriptInterface
-    fun detectVideo(url: String, title: String) {
-        if (url.isNotBlank()) {
-            onVideoFound(url, title.ifBlank { "Video" })
-        }
-    }
+    private val reported = mutableSetOf<String>()
 
     @JavascriptInterface
-    fun detectM3U8(url: String, title: String) {
-        if (url.isNotBlank() && (url.contains(".m3u8") || url.contains(".mp4") || url.contains(".webm") || url.contains(".ts"))) {
-            onVideoFound(url, title.ifBlank { "HLS Stream" })
+    fun detectVideo(url: String, title: String) {
+        if (url.isBlank()) return
+        synchronized(reported) {
+            if (url in reported) return
+            reported.add(url)
         }
+        onVideoFound(url, title.ifBlank { "Video" })
     }
 
     companion object {
-        fun getInjectionScript(): String {
+        fun getMasterScript(): String {
             return """
 (function(){
-var reported=[];
-function report(u,t){
-if(!u||reported.includes(u))return;
-reported.push(u);
-if(window.SkulxInterface)window.SkulxInterface.detectVideo(u,t||document.title);
+var SV=window.SkulxInterface;
+if(!SV)return;
+var done=new Set();
+function send(u,t){
+if(!u||done.has(u))return;
+done.add(u);
+SV.detectVideo(u,t||document.title);
+}
+function isVid(u){
+return u&&(u.includes('.mp4')||u.includes('.m3u8')||u.includes('.webm')||u.includes('.ts')||u.includes('.m4s')||u.includes('.mpd')||u.includes('.mov')||u.includes('.mkv')||u.includes('.flv')||u.includes('.avi')||u.startsWith('blob:'));
 }
 function scan(){
-var vids=document.querySelectorAll('video');
-vids.forEach(function(v){
-if(v.src)report(v.src,document.title);
-v.querySelectorAll('source').forEach(function(s){if(s.src)report(s.src,document.title);});
-});
+var all=document.querySelectorAll('video');
+for(var i=0;i<all.length;i++){
+var v=all[i];
+if(v.src&&isVid(v.src))send(v.src,document.title);
+var src=v.querySelectorAll('source');
+for(var j=0;j<src.length;j++)if(src[j].src&&isVid(src[j].src))send(src[j].src,document.title);
+if(v.currentSrc&&isVid(v.currentSrc))send(v.currentSrc,document.title);
+}
 var ifr=document.querySelectorAll('iframe');
-ifr.forEach(function(f){
+for(var k=0;k<ifr.length;k++){
 try{
-var fv=f.contentDocument.querySelectorAll('video');
-fv.forEach(function(v){if(v.src)report(v.src,document.title);});
+var d=ifr[k].contentDocument;
+if(!d)continue;
+var fv=d.querySelectorAll('video');
+for(var x=0;x<fv.length;x++){
+if(fv[x].src&&isVid(fv[x].src))send(fv[x].src,document.title);
+if(fv[x].currentSrc&&isVid(fv[x].currentSrc))send(fv[x].currentSrc,document.title);
+}
 }catch(e){}
-});
-var as=document.querySelectorAll('a[href]');
-as.forEach(function(a){
-var h=a.href;
-if(h&&(h.includes('.mp4')||h.includes('.m3u8')||h.includes('.webm')))report(h,a.innerText||document.title);
-});
 }
-setInterval(scan,1500);
-scan();
-})();
-            """.trimIndent()
-        }
-
-        fun getNetworkHookScript(): String {
-            return """
-(function(){
-var origOpen=XMLHttpRequest.prototype.open;
-XMLHttpRequest.prototype.open=function(method,url){
-if(url&&(url.includes('.m3u8')||url.includes('.mp4')||url.includes('.ts')||url.includes('.webm'))){
-if(window.SkulxInterface)window.SkulxInterface.detectM3U8(url,document.title);
 }
-return origOpen.apply(this,arguments);
+var origX=XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open=function(m,u){
+if(isVid(u))send(u,document.title);
+return origX.apply(this,arguments);
 };
-var origFetch=window.fetch;
-window.fetch=function(input,init){
-var url=(typeof input==='string')?input:input.url;
-if(url&&(url.includes('.m3u8')||url.includes('.mp4')||url.includes('.ts')||url.includes('.webm'))){
-if(window.SkulxInterface)window.SkulxInterface.detectM3U8(url,document.title);
-}
-return origFetch.apply(this,arguments);
+var origF=window.fetch;
+window.fetch=function(i,init){
+var u=(typeof i==='string')?i:(i&&i.url?i.url:'');
+if(isVid(u))send(u,document.title);
+return origF.apply(this,arguments);
 };
-})();
-            """.trimIndent()
-        }
-
-        fun getMediaHookScript(): String {
-            return """
-(function(){
+var origU=URL.createObjectURL;
+if(origU){
+URL.createObjectURL=function(obj){
+var r=origU.call(this,obj);
+if(r&&r.startsWith('blob:'))send(r,document.title);
+return r;
+};
+}
+var origRev=URL.revokeObjectURL;
+if(origRev){
+URL.revokeObjectURL=function(u){
+if(u&&u.startsWith('blob:'))send(u,document.title);
+return origRev.call(this,u);
+};
+}
 var origSrc=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');
+if(origSrc){
 Object.defineProperty(HTMLMediaElement.prototype,'src',{
-set:function(value){
-if(value&&(value.includes('.m3u8')||value.includes('.mp4')||value.includes('.webm')||value.includes('blob:'))){
-if(window.SkulxInterface)window.SkulxInterface.detectVideo(value,document.title);
-}
-if(origSrc&&origSrc.set)return origSrc.set.call(this,value);
-this.setAttribute('src',value);
+set:function(v){
+if(isVid(v))send(v,document.title);
+if(origSrc.set)origSrc.set.call(this,v);else this.setAttribute('src',v);
 },
-get:function(){
-if(origSrc&&origSrc.get)return origSrc.get.call(this);
-return this.getAttribute('src');
-}
+get:function(){return origSrc.get?origSrc.get.call(this):this.getAttribute('src');}
 });
+}
 var origPlay=HTMLMediaElement.prototype.play;
 HTMLMediaElement.prototype.play=function(){
 var s=this.src||this.currentSrc;
-if(s&&window.SkulxInterface)window.SkulxInterface.detectVideo(s,document.title);
+if(isVid(s))send(s,document.title);
 return origPlay.apply(this,arguments);
 };
+if(window.MediaSource){
+var origAdd=window.MediaSource.prototype.addSourceBuffer;
+window.MediaSource.prototype.addSourceBuffer=function(mt){
+var r=origAdd.call(this,mt);
+send('blob:'+this.url,document.title);
+return r;
+};
+}
+setInterval(scan,1000);
+scan();
 })();
             """.trimIndent()
         }

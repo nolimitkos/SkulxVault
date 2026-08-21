@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
-import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
@@ -15,8 +14,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.floatingactionbutton.FloatingActionButton
-import java.net.URL
-import java.util.concurrent.CopyOnWriteArrayList
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -25,23 +22,30 @@ class MainActivity : AppCompatActivity() {
     private lateinit var goButton: ImageButton
     private lateinit var menuButton: ImageButton
     private lateinit var fullscreenFab: FloatingActionButton
-    private val detectedVideos = mutableMapOf<String, String>()
+    private val detectedVideos = LinkedHashMap<String, String>()
     private var isFullscreen = false
-    private val adDomains = listOf(
+
+    private val adList = listOf(
         "googleads","googlesyndication","doubleclick","adsystem","amazon-adsystem",
         "facebook.com/tr","googletagmanager","google-analytics","scorecardresearch",
         "outbrain","taboola","adsrvr","bounceexchange","quantserve","moatads",
         "adsafeprotected","btloader","adnxs","rubiconproject","openx.net",
         "pubmatic","casalemedia","advertising","analytics","tracking",
-        "telemetry","metrics","log.", "logger.", "pixel.","beacon.",
+        "telemetry","metrics","log.","logger.","pixel.","beacon.",
         "cdn.ads","pagead","adserver","adservice","adform","adroll",
         "criteo","mediavine","adsymptotic","adspeed","adzerk","buysellads",
         "revcontent","popads","onclickads","adsterra","propellerads",
         "exoclick","juicyads","eroadvertising","trafficfactory","yllix",
-        "ad.plus","ad.plus","ezoic","infolinks","bidvertiser","adblade",
-        "sponsored","affiliate","promo.","campaign.","ads.", "ad.",
-        "banner","popunder","interstitial","prebid","header-bidding"
+        "ad.plus","ezoic","infolinks","bidvertiser","adblade",
+        "sponsored","affiliate","promo.","campaign.","ads.","ad.",
+        "banner","popunder","interstitial","prebid","header-bidding",
+        "googletagservices","facebook.net","connect.facebook.net",
+        "twitter.com/i/ads","linkedin.com/ads","pinterest.com/ads",
+        "redditstatic.com/ads","tiktok.com/ads","snapchat.com/ads",
+        "youtube.com/pagead","youtube.com/api/stats/ads"
     )
+
+    private val vidExts = listOf(".mp4",".m3u8",".webm",".ts",".m4s",".mpd",".mov",".mkv",".flv",".avi",".wmv")
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,10 +62,12 @@ class MainActivity : AppCompatActivity() {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
             cacheMode = WebSettings.LOAD_DEFAULT
+            loadsImagesAutomatically = true
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -88,9 +94,7 @@ class MainActivity : AppCompatActivity() {
                 urlBar.setText(url)
             }
             override fun onPageFinished(view: WebView?, url: String?) {
-                view?.evaluateJavascript(VideoDetector.getInjectionScript(), null)
-                view?.evaluateJavascript(VideoDetector.getNetworkHookScript(), null)
-                view?.evaluateJavascript(VideoDetector.getMediaHookScript(), null)
+                injectDetector()
             }
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 request?.url?.toString()?.let { webView.loadUrl(it) }
@@ -98,14 +102,21 @@ class MainActivity : AppCompatActivity() {
             }
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                 val url = request?.url?.toString() ?: return super.shouldInterceptRequest(view, request)
-                if (adDomains.any { url.contains(it, ignoreCase = true) }) {
+                val low = url.lowercase()
+
+                if (adList.any { low.contains(it) }) {
                     return WebResourceResponse("text/plain", "UTF-8", null)
                 }
-                if (url.contains(".m3u8") || url.contains(".mp4") || url.contains(".webm") || url.contains(".mkv") || url.contains(".ts")) {
-                    val title = webView.title ?: "Video"
-                    runOnUiThread {
-                        if (!detectedVideos.containsKey(url)) {
-                            detectedVideos[url] = title
+
+                if (vidExts.any { low.contains(it) } || request.url.toString().startsWith("blob:")) {
+                    val mime = request.requestHeaders?.get("Accept") ?: ""
+                    if (mime.contains("video") || mime.contains("application") || vidExts.any { low.contains(it) } || url.startsWith("blob:")) {
+                        val title = webView.title ?: "Video"
+                        runOnUiThread {
+                            if (!detectedVideos.containsKey(url)) {
+                                detectedVideos[url] = title
+                                Toast.makeText(this@MainActivity, "Video detected", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 }
@@ -117,14 +128,15 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (!detectedVideos.containsKey(url)) {
                     detectedVideos[url] = title
-                    Toast.makeText(this, "Detected: $title", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Detected: ${title.take(30)}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
         webView.addJavascriptInterface(detector, "SkulxInterface")
 
         goButton.setOnClickListener {
-            var url = urlBar.text.toString()
+            var url = urlBar.text.toString().trim()
+            if (url.isEmpty()) return@setOnClickListener
             if (!url.startsWith("http")) url = "https://$url"
             webView.loadUrl(url)
             urlBar.clearFocus()
@@ -141,12 +153,16 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://www.google.com")
     }
 
+    private fun injectDetector() {
+        webView.evaluateJavascript(VideoDetector.getMasterScript(), null)
+    }
+
     private fun toggleFullscreen() {
         if (isFullscreen) {
-            webView.evaluateJavascript("document.exitFullscreen && document.exitFullscreen();", null)
+            webView.evaluateJavascript("document.exitFullscreen&&document.exitFullscreen();", null)
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         } else {
-            webView.evaluateJavascript("document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();", null)
+            webView.evaluateJavascript("document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();", null)
             window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         }
         isFullscreen = !isFullscreen
@@ -163,34 +179,32 @@ class MainActivity : AppCompatActivity() {
         val forwardBtn = view.findViewById<Button>(R.id.forwardBtn)
         val reloadBtn = view.findViewById<Button>(R.id.reloadBtn)
 
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1,
-            detectedVideos.values.toList())
+        val items = detectedVideos.entries.map { "${it.value.take(40)} | ${it.key.take(50)}..." }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, items)
         listView.adapter = adapter
 
         listView.setOnItemClickListener { _, _, position, _ ->
             val url = detectedVideos.keys.toList()[position]
             val title = detectedVideos.values.toList()[position]
             AlertDialog.Builder(this)
-                .setTitle("Download Video?")
-                .setMessage(title)
+                .setTitle("Download?")
+                .setMessage(title.take(60))
                 .setPositiveButton("Download") { _, _ ->
                     startDownload(url, title)
                     dialog.dismiss()
                 }
-                .setNegativeButton("Copy Link") { _, _ ->
-                    val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Skulx", url))
-                    Toast.makeText(this, "Link copied", Toast.LENGTH_SHORT).show()
+                .setNegativeButton("Copy") { _, _ ->
+                    val cb = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cb.setPrimaryClip(android.content.ClipData.newPlainText("Skulx", url))
+                    Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
                 }
                 .setNeutralButton("Cancel", null)
                 .show()
         }
 
         refreshBtn.setOnClickListener {
-            webView.evaluateJavascript(VideoDetector.getInjectionScript(), null)
-            webView.evaluateJavascript(VideoDetector.getNetworkHookScript(), null)
-            webView.evaluateJavascript(VideoDetector.getMediaHookScript(), null)
-            Toast.makeText(this, "Scanning...", Toast.LENGTH_SHORT).show()
+            injectDetector()
+            Toast.makeText(this, "Scanning page...", Toast.LENGTH_SHORT).show()
         }
 
         backBtn.setOnClickListener { if (webView.canGoBack()) webView.goBack() }
